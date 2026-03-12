@@ -25,6 +25,7 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/miniconda3/bin:$HOME/.conda/
 DEFAULT_PROJECT_DIR="$HOME/Desktop"
 HISTORY_FILE="$HOME/.snap_prefix_history"
 DESC_HISTORY_FILE="$HOME/.snap_desc_history"
+DIR_HISTORY_FILE="$HOME/.snap_dir_history"
 MAX_HISTORY=10                           # Number of recent prefixes to keep
 MAX_DESC_HISTORY=3                       # Number of recent descriptions to keep
 OLLAMA_MODEL="llama3.2-vision:11b"       # Vision model for description
@@ -44,6 +45,7 @@ done
 # Ensure history files exist
 touch "$HISTORY_FILE"
 touch "$DESC_HISTORY_FILE"
+touch "$DIR_HISTORY_FILE"
 
 # Cleanup helper
 cleanup() {
@@ -174,7 +176,14 @@ PARSE_JSON
 fi
 
 # ── Step 3: Determine project directory ──────────────────────────
-PROJECT_DIR=$(osascript 2>/dev/null <<'FINDDIR'
+# Priority: 1) last saved dir from Change... button, 2) frontmost Finder window, 3) default
+SAVED_DIR=$(head -1 "$DIR_HISTORY_FILE" 2>/dev/null || echo "")
+
+if [[ -n "$SAVED_DIR" && -d "$SAVED_DIR" ]]; then
+    # Use last folder the user explicitly chose
+    PROJECT_DIR="$SAVED_DIR"
+else
+    PROJECT_DIR=$(osascript 2>/dev/null <<'FINDDIR'
 tell application "Finder"
     if (count of windows) > 0 then
         return POSIX path of (target of front window as alias)
@@ -185,8 +194,9 @@ end tell
 FINDDIR
 ) || ""
 
-if [[ -z "$PROJECT_DIR" ]]; then
-    PROJECT_DIR="$DEFAULT_PROJECT_DIR"
+    if [[ -z "$PROJECT_DIR" ]]; then
+        PROJECT_DIR="$DEFAULT_PROJECT_DIR"
+    fi
 fi
 PROJECT_DIR="${PROJECT_DIR%/}"
 IMAGE_DIR="${PROJECT_DIR}/images"
@@ -247,13 +257,17 @@ if [[ -z "$PREFIX" ]]; then
     exit 0
 fi
 
-# Update image dir if user changed it via folder picker
+# Update image dir if user changed it via folder picker, and persist the choice
 if [[ -n "$NEW_IMAGE_DIR" && "$NEW_IMAGE_DIR" != "$IMAGE_DIR" ]]; then
     IMAGE_DIR="$NEW_IMAGE_DIR"
-    mkdir -p "$IMAGE_DIR"
+    # Save the parent project dir (strip /images suffix) so it's used next time
+    CHOSEN_PROJECT_DIR="${IMAGE_DIR%/images}"
+    echo "$CHOSEN_PROJECT_DIR" > "$DIR_HISTORY_FILE"
+    echo "Saved project dir: $CHOSEN_PROJECT_DIR" >> "$DEBUG_LOG"
 fi
+mkdir -p "$IMAGE_DIR"
 
-# ── Step 8: Auto-number ─────────────────────────────────────────
+# ── Step 8: Auto-number (uses final IMAGE_DIR after any folder change) ──
 NEXT_NUM=1
 if ls "$IMAGE_DIR"/${PREFIX}[0-9]*.${EXT} &>/dev/null; then
     HIGHEST=$(ls "$IMAGE_DIR"/${PREFIX}[0-9]*.${EXT} \
