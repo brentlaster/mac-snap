@@ -61,13 +61,19 @@ echo "$(date): Starting snap (AI=$USE_AI)" > "$DEBUG_LOG"
 TMPDIR_SNAP=$(mktemp -d /tmp/snap_XXXXXXXX)
 TMPFILE="${TMPDIR_SNAP}/capture.png"
 
-if ! screencapture -i "$TMPFILE"; then
-    exit 0
-fi
+echo "Step 1: Taking screenshot..." >> "$DEBUG_LOG"
+# Brief delay to let macOS settle focus when triggered via hotkey over certain apps
+sleep 0.3
+# Don't check screencapture's exit code — macOS can return non-zero
+# even on success (e.g., when capturing certain apps). Just check the file.
+# The "|| true" prevents set -e from killing the script.
+screencapture -i "$TMPFILE" 2>>"$DEBUG_LOG" || true
 
 if [[ ! -s "$TMPFILE" ]]; then
+    echo "Screenshot file missing or empty (user cancelled or permission denied)" >> "$DEBUG_LOG"
     exit 0
 fi
+echo "Step 1: Screenshot captured ($(wc -c < "$TMPFILE") bytes)" >> "$DEBUG_LOG"
 
 # ── Step 2: Optionally kick off AI description in the background ─
 AI_RESULT_FILE="${TMPDIR_SNAP}/ai_description.txt"
@@ -175,14 +181,15 @@ PARSE_JSON
     echo "AI background PID: $AI_PID" >> "$DEBUG_LOG"
 fi
 
-# ── Step 3: Determine project directory ──────────────────────────
+echo "Step 3: Determining project directory..." >> "$DEBUG_LOG"
 # Priority: 1) last saved dir from Change... button, 2) frontmost Finder window, 3) default
 SAVED_DIR=$(head -1 "$DIR_HISTORY_FILE" 2>/dev/null || echo "")
 
 if [[ -n "$SAVED_DIR" && -d "$SAVED_DIR" ]]; then
-    # Use last folder the user explicitly chose
     PROJECT_DIR="$SAVED_DIR"
+    echo "  Using saved dir: $PROJECT_DIR" >> "$DEBUG_LOG"
 else
+    echo "  Checking Finder..." >> "$DEBUG_LOG"
     PROJECT_DIR=$(osascript 2>/dev/null <<'FINDDIR'
 tell application "Finder"
     if (count of windows) > 0 then
@@ -193,6 +200,7 @@ tell application "Finder"
 end tell
 FINDDIR
 ) || ""
+    echo "  Finder returned: '$PROJECT_DIR'" >> "$DEBUG_LOG"
 
     if [[ -z "$PROJECT_DIR" ]]; then
         PROJECT_DIR="$DEFAULT_PROJECT_DIR"
@@ -200,6 +208,7 @@ FINDDIR
 fi
 PROJECT_DIR="${PROJECT_DIR%/}"
 IMAGE_DIR="${PROJECT_DIR}/images"
+echo "  Final: $IMAGE_DIR" >> "$DEBUG_LOG"
 
 # ── Step 4: Load histories ───────────────────────────────────────
 PREFIX_CSV=$(cat "$HISTORY_FILE" 2>/dev/null | head -n "$MAX_HISTORY" | paste -sd "," - || echo "")
@@ -246,7 +255,11 @@ if [[ -n "$AI_DESCRIPTION" ]]; then
     DIALOG_ARGS+=(--ai-description "$AI_DESCRIPTION")
 fi
 
-DIALOG_OUTPUT=$(python3 "${SCRIPT_DIR}/snap_dialog.py" "${DIALOG_ARGS[@]}") || exit 0
+echo "Step 7: Launching dialog..." >> "$DEBUG_LOG"
+echo "  python3 path: $(which python3)" >> "$DEBUG_LOG"
+echo "  dialog script: ${SCRIPT_DIR}/snap_dialog.py" >> "$DEBUG_LOG"
+echo "  args: ${DIALOG_ARGS[*]}" >> "$DEBUG_LOG"
+DIALOG_OUTPUT=$(python3 "${SCRIPT_DIR}/snap_dialog.py" "${DIALOG_ARGS[@]}" 2>>"$DEBUG_LOG") || { echo "  Dialog exited with error or cancel" >> "$DEBUG_LOG"; exit 0; }
 
 # Parse output: PREFIX|DESCRIPTION|IMAGE_DIR
 PREFIX=$(echo "$DIALOG_OUTPUT" | cut -d'|' -f1)
